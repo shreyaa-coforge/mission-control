@@ -69,3 +69,21 @@ def check_limits(wind_knots: float, temp_c: float, fuel_pct: float) -> LimitResu
 
     verdict = "no_go" if violations else "go"
     return LimitResult(verdict=verdict, violations=violations)
+
+
+BRIEF_BY_MINUTES = {"high": 5, "medium": 15, "low": 30}
+SAFEST_BRIEF_BY_MINUTES = BRIEF_BY_MINUTES["high"]
+
+
+def brief_by_minutes(severity: str, has_violation: bool) -> int:
+    """Return the brief-by time in minutes for a severity.
+
+    Any violation forces the high-severity time. Severity is normalised
+    (lowercased, stripped); any unknown or non-string value falls back to the
+    safest (shortest) time.
+    """
+    if has_violation:
+        return SAFEST_BRIEF_BY_MINUTES
+    if isinstance(severity, str):
+        severity = severity.lower().strip()
+    return BRIEF_BY_MINUTES.get(severity, SAFEST_BRIEF_BY_MINUTES)

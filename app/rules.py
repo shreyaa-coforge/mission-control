@@ -87,3 +87,48 @@ def brief_by_minutes(severity: str, has_violation: bool) -> int:
     if isinstance(severity, str):
         severity = severity.lower().strip()
     return BRIEF_BY_MINUTES.get(severity, SAFEST_BRIEF_BY_MINUTES)
+
+
+# US dollars per 1 million tokens, keyed by model role.
+# PLACEHOLDERS: update these from the Azure OpenAI pricing page for the
+# actual deployments before relying on the cost figures.
+PRICES_PER_MILLION = {
+    "fast": {"input": 0.15, "output": 0.60},
+    "strong": {"input": 2.50, "output": 10.00},
+}
+
+
+def step_cost(
+    model_role: str,
+    input_tokens: int,
+    output_tokens: int,
+    prices: dict | None = None,
+) -> float:
+    """Return the US dollar cost of one model step, rounded to 6 decimals."""
+    if prices is None:
+        prices = PRICES_PER_MILLION
+    if model_role not in prices:
+        raise ValueError(f"Unknown model role: {model_role!r}")
+    if input_tokens < 0 or output_tokens < 0:
+        raise ValueError("Token counts must not be negative")
+    rate = prices[model_role]
+    cost = (
+        input_tokens / 1_000_000 * rate["input"]
+        + output_tokens / 1_000_000 * rate["output"]
+    )
+    return round(cost, 6)
+
+
+def report_cost(steps: list[dict], prices: dict | None = None) -> float:
+    """Return the total cost of a report's steps, rounded to 6 decimals.
+
+    Steps whose model_role is None are plain code steps and cost 0.
+    """
+    total = 0.0
+    for step in steps:
+        if step["model_role"] is None:
+            continue
+        total += step_cost(
+            step["model_role"], step["input_tokens"], step["output_tokens"], prices
+        )
+    return round(total, 6)

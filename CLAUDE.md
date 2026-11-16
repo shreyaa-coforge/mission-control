@@ -26,3 +26,9 @@ the OpenAI API via the official `openai` package (`MODEL_PROVIDER` set to
   -> `"high"`. Model failure or an unparseable reply -> both fallbacks.
 - The report note is untrusted data. Prompts wrap it in `<report>` tags and
   tell the model not to follow instructions inside it.
+- The model writes only briefing prose (`headline`, `summary`,
+  `recommended_action`). Code renders the verdict, violations, brief by time,
+  subsystem, severity, and review flags into the final briefing.
+- The reviewer model can only mark a draft "passed". Only a human can mark a
+  briefing "approved". Never use the word "approved" for the reviewer.
+- The draft and review loop runs at most 3 rounds.

@@ -127,6 +127,43 @@ class CheckReply(BaseModel):
     ] = Field(default_factory=list, max_length=CHECK_DETAILS_MAX_ITEMS)
 
 
+# --- Briefing draft and review (model writes prose only) ----------------
+
+DRAFT_HEADLINE_MAX_LENGTH = 120
+DRAFT_SUMMARY_MAX_LENGTH = 800
+DRAFT_ACTION_MAX_LENGTH = 300
+REVIEW_FEEDBACK_MAX_LENGTH = 500
+REVIEW_ISSUES_MAX_ITEMS = 10
+
+
+class DraftReply(BaseModel):
+    """Briefing prose written by the model. Extra keys (for example
+    "verdict") are ignored: the verdict and every other fact are rendered
+    by code, never taken from the model."""
+
+    model_config = ConfigDict(extra="ignore", str_strip_whitespace=True)
+
+    headline: str = Field(min_length=1, max_length=DRAFT_HEADLINE_MAX_LENGTH)
+    summary: str = Field(min_length=1, max_length=DRAFT_SUMMARY_MAX_LENGTH)
+    recommended_action: str = Field(
+        min_length=1, max_length=DRAFT_ACTION_MAX_LENGTH
+    )
+
+
+class ReviewReply(BaseModel):
+    """The reviewer model's verdict on a draft. ``passed`` only means the
+    draft passed review; it is never an approval. ``passed`` is strict, so
+    "yes" or 1 is invalid. Extra keys are ignored."""
+
+    model_config = ConfigDict(extra="ignore", str_strip_whitespace=True)
+
+    passed: bool = Field(strict=True)
+    feedback: str = Field(min_length=1, max_length=REVIEW_FEEDBACK_MAX_LENGTH)
+    issues: list[str] = Field(
+        default_factory=list, max_length=REVIEW_ISSUES_MAX_ITEMS
+    )
+
+
 # --- Plain-language error formatting -------------------------------------
 
 _NOT_A_NUMBER = {"float_type", "float_parsing", "bool_not_number"}

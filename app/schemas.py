@@ -4,7 +4,7 @@ Only input sanity is checked here. Whether a launch is go or no-go is decided
 by app/rules.py, never by this module.
 """
 
-from typing import Any, Literal, get_args
+from typing import Annotated, Any, Literal, get_args
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 from pydantic_core import PydanticCustomError
@@ -101,6 +101,30 @@ class Classification(BaseModel):
     severity: Severity
     # One sentence on why.
     reason: str = Field(min_length=1, max_length=REASON_MAX_LENGTH)
+
+
+# --- Pre-flight checks on a report note (injection, missing, panic) ------
+
+CHECK_REASON_MAX_LENGTH = 300
+CHECK_DETAILS_MAX_ITEMS = 10
+CHECK_DETAIL_MAX_LENGTH = 200
+
+
+class CheckReply(BaseModel):
+    """The model's reply for one of the three note checks.
+
+    ``flagged`` is strict: only a real JSON true/false is accepted, so a
+    string such as "yes" or a number such as 1 is invalid. Extra keys are
+    ignored.
+    """
+
+    model_config = ConfigDict(extra="ignore", str_strip_whitespace=True)
+
+    flagged: bool = Field(strict=True)
+    reason: str = Field(min_length=1, max_length=CHECK_REASON_MAX_LENGTH)
+    details: list[
+        Annotated[str, Field(max_length=CHECK_DETAIL_MAX_LENGTH)]
+    ] = Field(default_factory=list, max_length=CHECK_DETAILS_MAX_ITEMS)
 
 
 # --- Plain-language error formatting -------------------------------------

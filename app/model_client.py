@@ -64,6 +64,10 @@ class FakeModel(ModelClient):
         self.delay = delay
         self.calls: list[dict[str, Any]] = []
         self._list_positions: dict[str, int] = {}
+        # Concurrency tracking: how many complete() calls are running right
+        # now, and the highest number ever seen at once.
+        self.in_flight = 0
+        self.max_in_flight = 0
 
     async def complete(
         self,
@@ -72,6 +76,22 @@ class FakeModel(ModelClient):
         system: str,
         user: str,
         json_mode: bool = False,
+    ) -> ModelResponse:
+        self.in_flight += 1
+        self.max_in_flight = max(self.max_in_flight, self.in_flight)
+        try:
+            return await self._complete(step, role, system, user, json_mode)
+        finally:
+            # Runs on success and on any exception, so the count stays right.
+            self.in_flight -= 1
+
+    async def _complete(
+        self,
+        step: str,
+        role: str,
+        system: str,
+        user: str,
+        json_mode: bool,
     ) -> ModelResponse:
         self.calls.append(
             {

@@ -1,3 +1,4 @@
+import logging
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -7,8 +8,20 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.db import get_report, init_db, list_reports, save_report
+from app.db import (
+    get_report,
+    get_result,
+    get_trace,
+    init_db,
+    list_reports_with_results,
+    save_pipeline_result,
+    save_report,
+)
+from app.model_client import ModelClient, get_model_client
+from app.pipeline import run_pipeline
 from app.schemas import ReportIn, format_validation_errors
+
+logger = logging.getLogger(__name__)
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 DEFAULT_DB_PATH = "mission_control.db"
@@ -19,12 +32,19 @@ INVALID_JSON_BODY = {
 }
 
 
-def create_app(db_path: str | None = None) -> FastAPI:
+def create_app(
+    db_path: str | None = None, model_client: ModelClient | None = None
+) -> FastAPI:
     """Build the FastAPI app.
 
     If db_path is None, DATABASE_PATH from the environment is used, falling
     back to "mission_control.db". The database is initialised on startup, not
     at import time, so importing this module never creates a database file.
+
+    If model_client is None, get_model_client() builds one from the
+    environment (MODEL_PROVIDER). That happens on startup rather than here,
+    so importing this module (``app = create_app()`` below) never reads
+    credentials or fails because of a missing API key.
     """
     if db_path is None:
         db_path = os.environ.get("DATABASE_PATH", DEFAULT_DB_PATH)
@@ -32,10 +52,23 @@ def create_app(db_path: str | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         init_db(app.state.db_path)
+        if app.state.model_client is None:
+            app.state.model_client = get_model_client()
         yield
 
     app = FastAPI(title="Mission Control: Go/No-Go Launch Console", lifespan=lifespan)
     app.state.db_path = db_path
+    app.state.model_client = model_client
+
+    def _report_view(report_id: int) -> dict | None:
+        report = get_report(app.state.db_path, report_id)
+        if report is None:
+            return None
+        return {
+            "report": report,
+            "result": get_result(app.state.db_path, report_id),
+            "trace": get_trace(app.state.db_path, report_id),
+        }
 
     @app.exception_handler(RequestValidationError)
     async def validation_error_handler(
@@ -58,25 +91,38 @@ def create_app(db_path: str | None = None) -> FastAPI:
         return FileResponse(STATIC_DIR / "index.html")
 
     @app.post("/reports", status_code=201)
-    def create_report(report: ReportIn) -> dict:
+    async def create_report(report: ReportIn) -> dict:
+        # Save first: the report must be kept even if the pipeline fails.
         saved = save_report(app.state.db_path, report)
-        # The pipeline (rules verdict, model briefing) will run here in a
-        # later branch. It must never approve a briefing or change the verdict.
-        return saved
+        try:
+            # The pipeline computes the verdict in plain Python (app/rules.py)
+            # and only uses the model to classify. It never approves anything.
+            result = await run_pipeline(app.state.model_client, saved)
+            save_pipeline_result(app.state.db_path, saved["id"], result)
+        except Exception:
+            logger.exception("Pipeline failed for report %s", saved["id"])
+            return {
+                "report": saved,
+                "result": None,
+                "trace": [],
+                "error": "The report was saved, but the pipeline failed. "
+                "See the server log for details.",
+            }
+        return _report_view(saved["id"])
 
     @app.get("/reports")
     def get_reports() -> dict:
-        return {"reports": list_reports(app.state.db_path)}
+        return {"reports": list_reports_with_results(app.state.db_path)}
 
     @app.get("/reports/{report_id}")
     def get_one_report(report_id: int):
-        report = get_report(app.state.db_path, report_id)
-        if report is None:
+        view = _report_view(report_id)
+        if view is None:
             return JSONResponse(
                 status_code=404,
                 content={"error": "Report not found", "report_id": report_id},
             )
-        return report
+        return view
 
     return app
 

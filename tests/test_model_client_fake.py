@@ -94,3 +94,20 @@ def test_fake_model_module_does_not_import_openai():
     import app.model_client as mc
 
     assert "openai" not in mc.__dict__
+
+
+def test_fake_provider_uses_valid_demo_classify_reply():
+    import json
+
+    from app.model_client import DEMO_SCRIPT, get_model_client
+    from app.schemas import ALLOWED_SEVERITIES, ALLOWED_SUBSYSTEMS
+
+    client = get_model_client()  # conftest sets MODEL_PROVIDER=fake
+    assert isinstance(client, FakeModel)
+    reply = json.loads(client.script["classify"])
+    assert reply["subsystem"] in ALLOWED_SUBSYSTEMS
+    assert reply["severity"] in ALLOWED_SEVERITIES
+    assert reply["reason"]
+    # Each client gets its own copy of the shared demo script.
+    client.script["classify"] = "changed"
+    assert DEMO_SCRIPT["classify"] != "changed"

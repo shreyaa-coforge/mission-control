@@ -131,6 +131,27 @@ def list_reports(db_path: str) -> list[dict]:
     return [dict(row) for row in rows]
 
 
+def list_reports_with_results(db_path: str) -> list[dict]:
+    """Return all reports, newest first, each with its result summary.
+
+    Result fields (subsystem, severity, effective_severity, verdict,
+    brief_by_minutes, total_cost) are None when a report has no result yet.
+    """
+    report_cols = ", ".join(f"r.{c.strip()}" for c in _REPORT_COLUMNS.split(","))
+    with closing(_connect(db_path)) as conn:
+        rows = conn.execute(
+            f"""
+            SELECT {report_cols},
+                   res.subsystem, res.severity, res.effective_severity,
+                   res.verdict, res.brief_by_minutes, res.total_cost
+            FROM reports AS r
+            LEFT JOIN results AS res ON res.report_id = r.id
+            ORDER BY r.created_at DESC, r.id DESC
+            """
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
 def save_pipeline_result(
     db_path: str, report_id: int, result: PipelineResult
 ) -> None:

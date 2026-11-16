@@ -7,6 +7,7 @@ Every model call in the app goes through ``ModelClient``. Tests use
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -240,6 +241,20 @@ _OPENAI_ENV_VARS = (
     "OPENAI_MODEL_STRONG",
 )
 
+# Canned replies used when MODEL_PROVIDER=fake, so the app runs end to end
+# with no API key. Each key is a pipeline step name.
+# Later branches add demo replies for the other steps (checks, draft, review).
+DEMO_SCRIPT: dict[str, Any] = {
+    "classify": json.dumps(
+        {
+            "subsystem": "propulsion",
+            "severity": "medium",
+            "reason": "Demo mode reply, no real model was called.",
+        }
+    ),
+}
+
+
 def get_model_client() -> ModelClient:
     """Build the model client chosen by the MODEL_PROVIDER env variable."""
     # override=False: variables already in the environment (e.g. set by the
@@ -248,9 +263,8 @@ def get_model_client() -> ModelClient:
     provider = (os.getenv("MODEL_PROVIDER") or "openai").strip().lower()
 
     if provider == "fake":
-        # Empty script for now; we will give it demo replies in the
-        # pipeline branch.
-        return FakeModel(script={})
+        # A fresh copy so callers can never mutate the shared demo script.
+        return FakeModel(script=dict(DEMO_SCRIPT))
 
     if provider == "openai":
         values = {name: (os.getenv(name) or "").strip() for name in _OPENAI_ENV_VARS}

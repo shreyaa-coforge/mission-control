@@ -105,7 +105,7 @@ def _message_for(field: str, err_type: str) -> str:
     if err_type in _TOO_LONG and field in TEXT_MAX_LENGTHS:
         return f"{field} must be {TEXT_MAX_LENGTHS[field]} characters or fewer"
     if err_type == "json_invalid":
-        return "request body is not valid JSON"
+        return "request body must be valid JSON"
     if err_type in {"model_type", "model_attributes_type", "dict_type"}:
         return "request body must be a JSON object"
     return f"{field} is invalid"

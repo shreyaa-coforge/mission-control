@@ -31,6 +31,25 @@ def _connect(db_path: str) -> sqlite3.Connection:
     return conn
 
 
+# Columns added to `results` after it was first created. init_db adds any
+# that are missing from an older database, keeping existing rows.
+_RESULTS_ADDED_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("needs_review", "INTEGER"),
+    ("review_reasons_json", "TEXT"),
+    ("checks_json", "TEXT"),
+)
+
+
+def _migrate_results(conn: sqlite3.Connection) -> None:
+    existing = {
+        row["name"] for row in conn.execute("PRAGMA table_info(results)")
+    }
+    for name, col_type in _RESULTS_ADDED_COLUMNS:
+        if name not in existing:
+            # Names and types come from the constant above, never user input.
+            conn.execute(f"ALTER TABLE results ADD COLUMN {name} {col_type}")
+
+
 def init_db(db_path: str) -> None:
     """Create the tables if they do not exist. Safe to call more than once."""
     # A later branch will add the briefings table here.
@@ -61,10 +80,14 @@ def init_db(db_path: str) -> None:
                 violations_json TEXT NOT NULL,
                 brief_by_minutes INTEGER NOT NULL,
                 total_cost REAL NOT NULL,
-                created_at TEXT NOT NULL  -- UTC ISO 8601 timestamp
+                created_at TEXT NOT NULL,  -- UTC ISO 8601 timestamp
+                needs_review INTEGER,  -- 0 or 1
+                review_reasons_json TEXT,
+                checks_json TEXT
             )
             """
         )
+        _migrate_results(conn)
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS trace_steps (
@@ -135,7 +158,8 @@ def list_reports_with_results(db_path: str) -> list[dict]:
     """Return all reports, newest first, each with its result summary.
 
     Result fields (subsystem, severity, effective_severity, verdict,
-    brief_by_minutes, total_cost) are None when a report has no result yet.
+    brief_by_minutes, total_cost, needs_review) are None when a report has
+    no result yet.
     """
     report_cols = ", ".join(f"r.{c.strip()}" for c in _REPORT_COLUMNS.split(","))
     with closing(_connect(db_path)) as conn:
@@ -143,13 +167,21 @@ def list_reports_with_results(db_path: str) -> list[dict]:
             f"""
             SELECT {report_cols},
                    res.subsystem, res.severity, res.effective_severity,
-                   res.verdict, res.brief_by_minutes, res.total_cost
+                   res.verdict, res.brief_by_minutes, res.total_cost,
+                   res.needs_review
             FROM reports AS r
             LEFT JOIN results AS res ON res.report_id = r.id
             ORDER BY r.created_at DESC, r.id DESC
             """
         ).fetchall()
-    return [dict(row) for row in rows]
+    items = []
+    for row in rows:
+        item = dict(row)
+        # Stored as 0/1; keep None for reports with no result yet.
+        if item["needs_review"] is not None:
+            item["needs_review"] = bool(item["needs_review"])
+        items.append(item)
+    return items
 
 
 def save_pipeline_result(
@@ -163,8 +195,9 @@ def save_pipeline_result(
             INSERT INTO results
                 (report_id, subsystem, severity, effective_severity,
                  classify_fallback, verdict, violations_json,
-                 brief_by_minutes, total_cost, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 brief_by_minutes, total_cost, created_at,
+                 needs_review, review_reasons_json, checks_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 report_id,
@@ -177,6 +210,9 @@ def save_pipeline_result(
                 result.brief_by_minutes,
                 result.total_cost,
                 created_at,
+                int(result.needs_review),
+                json.dumps(result.review_reasons),
+                json.dumps(result.checks),
             ),
         )
         conn.executemany(
@@ -211,7 +247,8 @@ def get_result(db_path: str, report_id: int) -> dict | None:
             """
             SELECT report_id, subsystem, severity, effective_severity,
                    classify_fallback, verdict, violations_json,
-                   brief_by_minutes, total_cost, created_at
+                   brief_by_minutes, total_cost, created_at,
+                   needs_review, review_reasons_json, checks_json
             FROM results WHERE report_id = ?
             """,
             (report_id,),
@@ -221,6 +258,12 @@ def get_result(db_path: str, report_id: int) -> dict | None:
     data = dict(row)
     data["classify_fallback"] = bool(data["classify_fallback"])
     data["violations"] = json.loads(data.pop("violations_json"))
+    # Rows saved before the checks existed have NULLs in the new columns.
+    data["needs_review"] = bool(data["needs_review"])
+    reasons_json = data.pop("review_reasons_json")
+    data["review_reasons"] = json.loads(reasons_json) if reasons_json else []
+    checks_json = data.pop("checks_json")
+    data["checks"] = json.loads(checks_json) if checks_json else {}
     return data
 
 

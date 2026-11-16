@@ -1,7 +1,9 @@
 """Report pipeline: runs each step in order and records a trace.
 
-The model only classifies. The verdict, violations, brief-by time and cost
-are all computed in plain Python by app/rules.py.
+The model classifies the report and runs three note checks (injection,
+missing details, panic). The verdict, violations, brief-by time and cost are
+all computed in plain Python by app/rules.py. The checks only raise review
+flags; they never change the verdict and never approve anything.
 """
 
 from __future__ import annotations
@@ -10,6 +12,7 @@ from dataclasses import asdict, dataclass, field
 
 from app import rules
 from app.model_client import ModelClient
+from app.steps.checks import CheckResult, run_all_checks
 from app.steps.classify import classify_report
 
 
@@ -37,12 +40,63 @@ class PipelineResult:
     brief_by_minutes: int
     trace: list[TraceStep]
     total_cost: float
+    # "injection" / "missing" / "panic" -> {flagged, reason, details, failed}
+    checks: dict[str, dict] = field(default_factory=dict)
+    needs_review: bool = False
+    review_reasons: list[str] = field(default_factory=list)
 
 
 def _limits_summary(verdict: str, violations: list[rules.Violation]) -> str:
     if not violations:
         return verdict
     return f"{verdict}: " + "; ".join(v.message for v in violations)
+
+
+_CHECK_LABELS = {
+    "injection": "Hidden instructions",
+    "missing": "Missing details",
+    "panic": "Panic tone",
+}
+
+_CHECK_SUMMARY_PREFIX = {
+    "injection": "instruction attempt",
+    "panic": "alarmist tone",
+}
+
+
+def _check_summary(check: CheckResult) -> str:
+    if check.failed:
+        return "check failed"
+    if not check.flagged:
+        return "clear"
+    if check.check == "missing":
+        # e.g. "flagged: missing time, component"
+        items = [
+            d.removeprefix("no ").removesuffix(" given").strip()
+            for d in check.details
+        ]
+        return "flagged: missing " + (", ".join(items) if items else "details")
+    return f"flagged: {_CHECK_SUMMARY_PREFIX[check.check]}"
+
+
+def _review_reasons(checks: list[CheckResult]) -> list[str]:
+    """Plain-sentence reasons a human must look at this report.
+
+    Only an injection flag or a failed check sends a report to review.
+    Missing-details and panic flags alone are shown but do not.
+    """
+    reasons: list[str] = []
+    for check in checks:
+        if check.failed:
+            reasons.append(
+                f"{_CHECK_LABELS[check.check]} check could not be completed"
+            )
+        elif check.check == "injection" and check.flagged:
+            evidence = (
+                check.pattern_hits[0] if check.pattern_hits else check.reason
+            )
+            reasons.append(f"Possible hidden instructions in note: {evidence}")
+    return reasons
 
 
 async def run_pipeline(client: ModelClient, report: dict) -> PipelineResult:
@@ -124,8 +178,53 @@ async def run_pipeline(client: ModelClient, report: dict) -> PipelineResult:
         )
     )
 
-    # Later branches will add the three checks and the draft and review
-    # loop here.
+    # d) three note checks (model steps), run in parallel. They only raise
+    # review flags. NOTHING from a check may touch verdict, violations,
+    # severity, effective_severity, or brief_by_minutes, which are already
+    # final above.
+    check_results = await run_all_checks(client, report)
+    for check in check_results:
+        response = check.response
+        in_tokens = response.input_tokens if response else 0
+        out_tokens = response.output_tokens if response else 0
+        detail = {
+            "flagged": check.flagged,
+            "reason": check.reason,
+            "details": list(check.details),
+            "failed": check.failed,
+            "error": check.error,
+            "elapsed_ms": check.elapsed_ms,
+            "parallel_group": "checks",
+        }
+        if check.check == "injection":
+            detail["pattern_hits"] = list(check.pattern_hits)
+        trace.append(
+            TraceStep(
+                position=len(trace),
+                step=check.step,
+                kind="model",
+                model_role="fast",
+                input_tokens=in_tokens,
+                output_tokens=out_tokens,
+                cost=rules.step_cost("fast", in_tokens, out_tokens),
+                summary=_check_summary(check),
+                detail=detail,
+            )
+        )
+
+    checks = {
+        c.check: {
+            "flagged": c.flagged,
+            "reason": c.reason,
+            "details": list(c.details),
+            "failed": c.failed,
+        }
+        for c in check_results
+    }
+    review_reasons = _review_reasons(check_results)
+    needs_review = bool(review_reasons)
+
+    # A later branch will add the draft and review loop here.
 
     total_cost = rules.report_cost([asdict(s) for s in trace])
 
@@ -139,4 +238,7 @@ async def run_pipeline(client: ModelClient, report: dict) -> PipelineResult:
         brief_by_minutes=minutes,
         trace=trace,
         total_cost=total_cost,
+        checks=checks,
+        needs_review=needs_review,
+        review_reasons=review_reasons,
     )

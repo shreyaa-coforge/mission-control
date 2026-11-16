@@ -14,7 +14,15 @@ from app.schemas import ReportIn
 
 def fake_model() -> FakeModel:
     reply = {"subsystem": "weather", "severity": "medium", "reason": "Gusty."}
-    return FakeModel(script={"classify": json.dumps(reply)})
+    check = json.dumps({"flagged": False, "reason": "Clear.", "details": []})
+    return FakeModel(
+        script={
+            "classify": json.dumps(reply),
+            "check_injection": check,
+            "check_missing": check,
+            "check_panic": check,
+        }
+    )
 
 
 def test_report_survives_restart(tmp_path):

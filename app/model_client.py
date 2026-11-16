@@ -208,7 +208,9 @@ _AZURE_ENV_VARS = (
 
 def get_model_client() -> ModelClient:
     """Build the model client chosen by the MODEL_PROVIDER env variable."""
-    load_dotenv()
+    # override=False: variables already in the environment (e.g. set by the
+    # test fixture or the shell) always win over values in .env.
+    load_dotenv(override=False)
     provider = (os.getenv("MODEL_PROVIDER") or "azure").strip().lower()
 
     if provider == "fake":

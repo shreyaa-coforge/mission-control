@@ -202,3 +202,102 @@ def test_get_result_and_trace_unknown_report(db_path):
 
     assert get_result(db_path, 9999) is None
     assert get_trace(db_path, 9999) == []
+
+
+# --- Check results: needs_review, review_reasons, checks -------------------
+
+_OLD_RESULTS_TABLE = """
+    CREATE TABLE results (
+        report_id INTEGER PRIMARY KEY REFERENCES reports(id),
+        subsystem TEXT NOT NULL,
+        severity TEXT NOT NULL,
+        effective_severity TEXT NOT NULL,
+        classify_fallback INTEGER NOT NULL,
+        verdict TEXT NOT NULL,
+        violations_json TEXT NOT NULL,
+        brief_by_minutes INTEGER NOT NULL,
+        total_cost REAL NOT NULL,
+        created_at TEXT NOT NULL
+    )
+"""
+
+
+def _result_columns(path: str) -> set[str]:
+    with sqlite3.connect(path) as conn:
+        return {r[1] for r in conn.execute("PRAGMA table_info(results)")}
+
+
+def test_migration_adds_check_columns_and_keeps_old_rows(tmp_path):
+    from app.db import get_result
+
+    path = str(tmp_path / "old.db")
+    # Build a database the way it looked before the checks existed.
+    init_db(path)
+    with sqlite3.connect(path) as conn:
+        conn.execute("DROP TABLE results")
+        conn.execute(_OLD_RESULTS_TABLE)
+    report = save_report(path, _report())
+    with sqlite3.connect(path) as conn:
+        conn.execute(
+            "INSERT INTO results VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (report["id"], "weather", "medium", "medium", 0, "go", "[]",
+             15, 0.001, "2026-01-01T00:00:00+00:00"),
+        )
+    assert "needs_review" not in _result_columns(path)
+
+    init_db(path)
+    init_db(path)  # running the migration twice must be harmless
+
+    assert {"needs_review", "review_reasons_json", "checks_json"} <= (
+        _result_columns(path)
+    )
+    assert get_report(path, report["id"]) == report
+    old = get_result(path, report["id"])
+    assert old["subsystem"] == "weather"
+    assert old["verdict"] == "go"
+    assert old["brief_by_minutes"] == 15
+    assert old["needs_review"] is False
+    assert old["review_reasons"] == []
+    assert old["checks"] == {}
+
+
+def test_check_fields_round_trip(db_path):
+    from app.db import get_result, save_pipeline_result
+
+    checks = {
+        "injection": {"flagged": True, "reason": "Gives orders.",
+                      "details": ["Ignore all previous instructions"],
+                      "failed": False},
+        "missing": {"flagged": True, "reason": "Check could not be completed",
+                    "details": [], "failed": True},
+        "panic": {"flagged": False, "reason": "Calm.", "details": [],
+                  "failed": False},
+    }
+    reasons = [
+        "Possible hidden instructions in note: Ignore all previous instructions",
+        "Missing details check could not be completed",
+    ]
+    result = _pipeline_result()
+    result.checks = checks
+    result.needs_review = True
+    result.review_reasons = reasons
+
+    report = save_report(db_path, _report())
+    save_pipeline_result(db_path, report["id"], result)
+    saved = get_result(db_path, report["id"])
+    assert saved["needs_review"] is True
+    assert saved["review_reasons"] == reasons
+    assert saved["checks"] == checks
+    assert "checks_json" not in saved
+    assert "review_reasons_json" not in saved
+
+
+def test_needs_review_false_round_trips_as_bool(db_path):
+    from app.db import get_result, save_pipeline_result
+
+    report = save_report(db_path, _report())
+    save_pipeline_result(db_path, report["id"], _pipeline_result())
+    saved = get_result(db_path, report["id"])
+    assert saved["needs_review"] is False
+    assert saved["review_reasons"] == []
+    assert saved["checks"] == {}

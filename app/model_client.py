@@ -263,7 +263,15 @@ _OPENAI_ENV_VARS = (
 
 # Canned replies used when MODEL_PROVIDER=fake, so the app runs end to end
 # with no API key. Each key is a pipeline step name.
-# Later branches add demo replies for the other steps (checks, draft, review).
+# Later branches add demo replies for the other steps (draft, review).
+_DEMO_CHECK_REPLY = json.dumps(
+    {
+        "flagged": False,
+        "reason": "Demo mode reply, no real model was called.",
+        "details": [],
+    }
+)
+
 DEMO_SCRIPT: dict[str, Any] = {
     "classify": json.dumps(
         {
@@ -272,6 +280,11 @@ DEMO_SCRIPT: dict[str, Any] = {
             "reason": "Demo mode reply, no real model was called.",
         }
     ),
+    # The injection pattern backstop still runs in demo mode, so a note with
+    # an obvious instruction attempt is flagged even with this reply.
+    "check_injection": _DEMO_CHECK_REPLY,
+    "check_missing": _DEMO_CHECK_REPLY,
+    "check_panic": _DEMO_CHECK_REPLY,
 }
 
 

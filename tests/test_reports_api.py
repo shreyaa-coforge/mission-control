@@ -30,8 +30,20 @@ RESULT_SUMMARY_FIELDS = ("subsystem", "severity", "effective_severity",
                          "verdict", "brief_by_minutes", "total_cost")
 
 
+CHECK_REPLY = json.dumps({"flagged": False, "reason": "Clear.", "details": []})
+CHECK_SCRIPT = {
+    "check_injection": CHECK_REPLY,
+    "check_missing": CHECK_REPLY,
+    "check_panic": CHECK_REPLY,
+}
+ALL_STEPS = [
+    "classify", "check_limits", "brief_by",
+    "check_injection", "check_missing", "check_panic",
+]
+
+
 def fake_model() -> FakeModel:
-    return FakeModel(script={"classify": CLASSIFY_REPLY})
+    return FakeModel(script={"classify": CLASSIFY_REPLY, **CHECK_SCRIPT})
 
 
 @pytest.fixture
@@ -194,7 +206,7 @@ def test_result_and_trace_survive_restart_via_api(db_path):
     # App #2 gets a model that would fail if called: GET must read from the
     # database, not re-run the pipeline.
     app2 = create_app(
-        db_path=db_path, model_client=FakeModel(script={"classify": ModelError("x")})
+        db_path=db_path, model_client=FakeModel(script={"classify": ModelError("x"), **CHECK_SCRIPT})
     )
     with TestClient(app2) as client2:
         resp = client2.get(f"/reports/{posted['report']['id']}")
@@ -204,9 +216,7 @@ def test_result_and_trace_survive_restart_via_api(db_path):
     assert body["result"] == posted["result"]
     assert body["trace"] == posted["trace"]
     assert body["result"]["verdict"] == "no_go"
-    assert [s["step"] for s in body["trace"]] == [
-        "classify", "check_limits", "brief_by"
-    ]
+    assert [s["step"] for s in body["trace"]] == ALL_STEPS
 
 
 # --- Pipeline on filing ---------------------------------------------------
@@ -224,10 +234,11 @@ def test_post_safe_readings_runs_pipeline_and_returns_go(client):
     assert result["effective_severity"] == "low"
     assert result["brief_by_minutes"] == 30
     assert result["classify_fallback"] is False
-    assert [s["step"] for s in body["trace"]] == [
-        "classify", "check_limits", "brief_by"
-    ]
-    assert [s["position"] for s in body["trace"]] == [0, 1, 2]
+    assert [s["step"] for s in body["trace"]] == ALL_STEPS
+    assert [s["position"] for s in body["trace"]] == [0, 1, 2, 3, 4, 5]
+    assert result["needs_review"] is False
+    assert result["review_reasons"] == []
+    assert set(result["checks"]) == {"injection", "missing", "panic"}
 
 
 def test_post_high_wind_is_no_go_and_forces_high(client):
@@ -242,7 +253,9 @@ def test_post_high_wind_is_no_go_and_forces_high(client):
 
 
 def test_post_with_model_error_uses_code_verdict_and_fallbacks(db_path):
-    model = FakeModel(script={"classify": ModelError("model is down")})
+    model = FakeModel(
+        script={"classify": ModelError("model is down"), **CHECK_SCRIPT}
+    )
     app = create_app(db_path=db_path, model_client=model)
     with TestClient(app) as c:
         resp = c.post("/reports", json={**VALID_REPORT, "temp_c": 2.0})
@@ -256,12 +269,14 @@ def test_post_with_model_error_uses_code_verdict_and_fallbacks(db_path):
     assert result["verdict"] == "no_go"
     assert [v["reading"] for v in result["violations"]] == ["temp_c"]
     assert result["brief_by_minutes"] == 5
-    assert len(body["trace"]) == 3
+    assert len(body["trace"]) == 6
     assert body["trace"][0]["detail"]["fallback_used"] is True
 
 
 def test_post_model_error_with_safe_readings_is_still_go(db_path):
-    model = FakeModel(script={"classify": ModelError("model is down")})
+    model = FakeModel(
+        script={"classify": ModelError("model is down"), **CHECK_SCRIPT}
+    )
     with TestClient(create_app(db_path=db_path, model_client=model)) as c:
         result = c.post("/reports", json=VALID_REPORT).json()["result"]
     assert result["verdict"] == "go"
@@ -339,6 +354,8 @@ def test_create_app_with_fake_provider_uses_demo_script():
     assert body["result"]["severity"] == "medium"
     assert body["result"]["classify_fallback"] is False
     assert body["result"]["verdict"] == "go"
+    # Demo mode has check replies too, so a clean note is not sent to review.
+    assert body["result"]["needs_review"] is False
     assert body["trace"][0]["detail"]["reason"] == (
         "Demo mode reply, no real model was called."
     )

@@ -158,7 +158,8 @@ def list_reports_with_results(db_path: str) -> list[dict]:
     """Return all reports, newest first, each with its result summary.
 
     Result fields (subsystem, severity, effective_severity, verdict,
-    brief_by_minutes, total_cost) are None when a report has no result yet.
+    brief_by_minutes, total_cost, needs_review) are None when a report has
+    no result yet.
     """
     report_cols = ", ".join(f"r.{c.strip()}" for c in _REPORT_COLUMNS.split(","))
     with closing(_connect(db_path)) as conn:
@@ -166,13 +167,21 @@ def list_reports_with_results(db_path: str) -> list[dict]:
             f"""
             SELECT {report_cols},
                    res.subsystem, res.severity, res.effective_severity,
-                   res.verdict, res.brief_by_minutes, res.total_cost
+                   res.verdict, res.brief_by_minutes, res.total_cost,
+                   res.needs_review
             FROM reports AS r
             LEFT JOIN results AS res ON res.report_id = r.id
             ORDER BY r.created_at DESC, r.id DESC
             """
         ).fetchall()
-    return [dict(row) for row in rows]
+    items = []
+    for row in rows:
+        item = dict(row)
+        # Stored as 0/1; keep None for reports with no result yet.
+        if item["needs_review"] is not None:
+            item["needs_review"] = bool(item["needs_review"])
+        items.append(item)
+    return items
 
 
 def save_pipeline_result(

@@ -109,3 +109,96 @@ def test_text_is_stored_literally_not_as_sql(db_path):
     saved = save_report(db_path, _report(name=nasty, note=nasty))
     assert get_report(db_path, saved["id"])["name"] == nasty
     assert "reports" in _table_names(db_path)
+
+
+def _pipeline_result():
+    from app.pipeline import PipelineResult, TraceStep
+
+    # Steps are deliberately out of position order to prove get_trace sorts.
+    trace = [
+        TraceStep(
+            position=2, step="brief_by", kind="code", model_role=None,
+            input_tokens=0, output_tokens=0, cost=0.0, summary="5 min (high)",
+            detail={"severity": "low", "effective_severity": "high",
+                    "has_violation": True, "minutes": 5},
+        ),
+        TraceStep(
+            position=0, step="classify", kind="model", model_role="fast",
+            input_tokens=100, output_tokens=50, cost=0.000035,
+            summary="propulsion / low",
+            detail={"subsystem": "propulsion", "severity": "low",
+                    "reason": "Pump.", "fallback_used": False,
+                    "fallback_fields": [], "error": None},
+        ),
+        TraceStep(
+            position=1, step="check_limits", kind="code", model_role=None,
+            input_tokens=0, output_tokens=0, cost=0.0,
+            summary="no_go: Wind 30 knots exceeds max 25 knots",
+            detail={"verdict": "no_go", "violations": [{"reading": "wind_knots"}]},
+        ),
+    ]
+    violations = [
+        {"reading": "wind_knots", "value": 30.0, "limit": "<= 25 knots",
+         "message": "Wind 30 knots exceeds max 25 knots"}
+    ]
+    return PipelineResult(
+        subsystem="propulsion", severity="low", effective_severity="high",
+        classify_fallback=False, verdict="no_go", violations=violations,
+        brief_by_minutes=5, trace=trace, total_cost=0.000035,
+    )
+
+
+def test_init_db_creates_results_and_trace_tables(db_path):
+    assert {"results", "trace_steps"} <= _table_names(db_path)
+
+
+def test_save_pipeline_result_round_trip(db_path):
+    from app.db import get_result, get_trace, save_pipeline_result
+
+    report = save_report(db_path, _report())
+    result = _pipeline_result()
+    save_pipeline_result(db_path, report["id"], result)
+
+    saved = get_result(db_path, report["id"])
+    assert saved["report_id"] == report["id"]
+    assert saved["subsystem"] == "propulsion"
+    assert saved["severity"] == "low"
+    assert saved["effective_severity"] == "high"
+    assert saved["classify_fallback"] is False
+    assert saved["verdict"] == "no_go"
+    assert saved["violations"] == result.violations
+    assert isinstance(saved["violations"], list)
+    assert saved["brief_by_minutes"] == 5
+    assert saved["total_cost"] == result.total_cost
+    assert isinstance(saved["created_at"], str)
+
+    trace = get_trace(db_path, report["id"])
+    by_position = sorted(result.trace, key=lambda s: s.position)
+    assert len(trace) == 3
+    for row, step in zip(trace, by_position):
+        assert row["step"] == step.step
+        assert row["kind"] == step.kind
+        assert row["model_role"] == step.model_role
+        assert row["input_tokens"] == step.input_tokens
+        assert row["output_tokens"] == step.output_tokens
+        assert row["cost"] == step.cost
+        assert row["summary"] == step.summary
+        assert row["detail"] == step.detail
+        assert isinstance(row["detail"], dict)
+
+
+def test_trace_steps_come_back_in_position_order(db_path):
+    from app.db import get_trace, save_pipeline_result
+
+    report = save_report(db_path, _report())
+    save_pipeline_result(db_path, report["id"], _pipeline_result())
+    trace = get_trace(db_path, report["id"])
+    assert [s["position"] for s in trace] == [0, 1, 2]
+    assert [s["step"] for s in trace] == ["classify", "check_limits", "brief_by"]
+
+
+def test_get_result_and_trace_unknown_report(db_path):
+    from app.db import get_result, get_trace
+
+    assert get_result(db_path, 9999) is None
+    assert get_trace(db_path, 9999) == []

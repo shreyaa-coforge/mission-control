@@ -4,7 +4,7 @@ Only input sanity is checked here. Whether a launch is go or no-go is decided
 by app/rules.py, never by this module.
 """
 
-from typing import Any
+from typing import Any, Literal, get_args
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 from pydantic_core import PydanticCustomError
@@ -64,6 +64,43 @@ class ReportIn(BaseModel):
         if isinstance(value, bool):
             raise PydanticCustomError("bool_not_number", "boolean is not a number")
         return value
+
+
+# --- Classification of a report by the model -----------------------------
+
+Subsystem = Literal[
+    "propulsion",
+    "avionics",
+    "telemetry",
+    "guidance",
+    "power",
+    "thermal",
+    "structures",
+    "ground_systems",
+    "weather",
+    "other",
+]
+Severity = Literal["high", "medium", "low"]
+
+ALLOWED_SUBSYSTEMS: tuple[str, ...] = get_args(Subsystem)
+ALLOWED_SEVERITIES: tuple[str, ...] = get_args(Severity)
+REASON_MAX_LENGTH = 300
+
+
+class Classification(BaseModel):
+    """Subsystem and severity for a report, as suggested by the model.
+
+    Extra keys in the model reply (for example "verdict") are ignored: they
+    are dropped on validation and never stored or used. The verdict is
+    decided only by app/rules.py.
+    """
+
+    model_config = ConfigDict(extra="ignore", str_strip_whitespace=True)
+
+    subsystem: Subsystem
+    severity: Severity
+    # One sentence on why.
+    reason: str = Field(min_length=1, max_length=REASON_MAX_LENGTH)
 
 
 # --- Plain-language error formatting -------------------------------------

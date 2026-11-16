@@ -7,11 +7,18 @@ which is what lets a report survive a server restart.
 All queries use ? placeholders. Never build SQL with string formatting.
 """
 
+from __future__ import annotations
+
+import json
 import sqlite3
 from contextlib import closing
 from datetime import datetime, timezone
+from typing import TYPE_CHECKING
 
 from app.schemas import ReportIn
+
+if TYPE_CHECKING:
+    from app.pipeline import PipelineResult
 
 _REPORT_COLUMNS = (
     "id, name, station, wind_knots, temp_c, fuel_pct, note, created_at"
@@ -26,8 +33,7 @@ def _connect(db_path: str) -> sqlite3.Connection:
 
 def init_db(db_path: str) -> None:
     """Create the tables if they do not exist. Safe to call more than once."""
-    # Later branches will add the results, briefings, and trace_steps tables
-    # here, alongside reports.
+    # A later branch will add the briefings table here.
     with closing(_connect(db_path)) as conn, conn:
         conn.execute(
             """
@@ -40,6 +46,39 @@ def init_db(db_path: str) -> None:
                 fuel_pct REAL NOT NULL,
                 note TEXT NOT NULL,
                 created_at TEXT NOT NULL  -- UTC ISO 8601 timestamp
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS results (
+                report_id INTEGER PRIMARY KEY REFERENCES reports(id),
+                subsystem TEXT NOT NULL,
+                severity TEXT NOT NULL,
+                effective_severity TEXT NOT NULL,
+                classify_fallback INTEGER NOT NULL,  -- 0 or 1
+                verdict TEXT NOT NULL,
+                violations_json TEXT NOT NULL,
+                brief_by_minutes INTEGER NOT NULL,
+                total_cost REAL NOT NULL,
+                created_at TEXT NOT NULL  -- UTC ISO 8601 timestamp
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS trace_steps (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                report_id INTEGER NOT NULL REFERENCES reports(id),
+                position INTEGER NOT NULL,
+                step TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                model_role TEXT,
+                input_tokens INTEGER NOT NULL,
+                output_tokens INTEGER NOT NULL,
+                cost REAL NOT NULL,
+                summary TEXT NOT NULL,
+                detail_json TEXT NOT NULL
             )
             """
         )
@@ -90,3 +129,95 @@ def list_reports(db_path: str) -> list[dict]:
             "ORDER BY created_at DESC, id DESC"
         ).fetchall()
     return [dict(row) for row in rows]
+
+
+def save_pipeline_result(
+    db_path: str, report_id: int, result: PipelineResult
+) -> None:
+    """Save a pipeline result and all its trace steps in one transaction."""
+    created_at = datetime.now(timezone.utc).isoformat()
+    with closing(_connect(db_path)) as conn, conn:
+        conn.execute(
+            """
+            INSERT INTO results
+                (report_id, subsystem, severity, effective_severity,
+                 classify_fallback, verdict, violations_json,
+                 brief_by_minutes, total_cost, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                report_id,
+                result.subsystem,
+                result.severity,
+                result.effective_severity,
+                int(result.classify_fallback),
+                result.verdict,
+                json.dumps(result.violations),
+                result.brief_by_minutes,
+                result.total_cost,
+                created_at,
+            ),
+        )
+        conn.executemany(
+            """
+            INSERT INTO trace_steps
+                (report_id, position, step, kind, model_role, input_tokens,
+                 output_tokens, cost, summary, detail_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    report_id,
+                    s.position,
+                    s.step,
+                    s.kind,
+                    s.model_role,
+                    s.input_tokens,
+                    s.output_tokens,
+                    s.cost,
+                    s.summary,
+                    json.dumps(s.detail),
+                )
+                for s in result.trace
+            ],
+        )
+
+
+def get_result(db_path: str, report_id: int) -> dict | None:
+    """Return the pipeline result for a report, or None if there is none."""
+    with closing(_connect(db_path)) as conn:
+        row = conn.execute(
+            """
+            SELECT report_id, subsystem, severity, effective_severity,
+                   classify_fallback, verdict, violations_json,
+                   brief_by_minutes, total_cost, created_at
+            FROM results WHERE report_id = ?
+            """,
+            (report_id,),
+        ).fetchone()
+    if row is None:
+        return None
+    data = dict(row)
+    data["classify_fallback"] = bool(data["classify_fallback"])
+    data["violations"] = json.loads(data.pop("violations_json"))
+    return data
+
+
+def get_trace(db_path: str, report_id: int) -> list[dict]:
+    """Return a report's trace steps ordered by position."""
+    with closing(_connect(db_path)) as conn:
+        rows = conn.execute(
+            """
+            SELECT position, step, kind, model_role, input_tokens,
+                   output_tokens, cost, summary, detail_json
+            FROM trace_steps WHERE report_id = ?
+            ORDER BY position, id
+            """,
+            (report_id,),
+        ).fetchall()
+    steps = []
+    for row in rows:
+        data = dict(row)
+        data["detail"] = json.loads(data.pop("detail_json"))
+        steps.append(data)
+    return steps

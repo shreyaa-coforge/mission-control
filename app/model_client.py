@@ -119,31 +119,27 @@ class FakeModel(ModelClient):
         )
 
 
-class AzureOpenAIClient(ModelClient):
-    """Real model client backed by Azure OpenAI.
+class OpenAIClient(ModelClient):
+    """Real model client backed by the public OpenAI API.
 
-    ``deployments`` maps a role ("fast", "strong") to an Azure deployment
-    name. ``sdk_client`` may be injected so tests never touch the network.
+    ``models`` maps a role ("fast", "strong") to an OpenAI model name.
+    ``sdk_client`` may be injected so tests never touch the network.
     """
 
     def __init__(
         self,
-        endpoint: str,
         api_key: str,
-        api_version: str,
-        deployments: dict[str, str],
+        models: dict[str, str],
         sdk_client: Any = None,
     ) -> None:
-        self.deployments = dict(deployments)
+        self.models = dict(models)
+        # Kept only so it can be scrubbed from error messages.
+        self._api_key = api_key
         if sdk_client is None:
             # Imported here so FakeModel users never need ``openai`` loaded.
             import openai
 
-            sdk_client = openai.AsyncAzureOpenAI(
-                azure_endpoint=endpoint,
-                api_key=api_key,
-                api_version=api_version,
-            )
+            sdk_client = openai.AsyncOpenAI(api_key=api_key)
         self._client = sdk_client
 
     async def complete(
@@ -154,85 +150,121 @@ class AzureOpenAIClient(ModelClient):
         user: str,
         json_mode: bool = False,
     ) -> ModelResponse:
-        deployment = self.deployments.get(role)
-        if deployment is None:
+        model = self.models.get(role)
+        if model is None:
             raise ModelError(
-                f"Unknown model role '{role}'. "
-                f"Known roles: {sorted(self.deployments)}"
+                f"Unknown model role '{role}'. Known roles: {sorted(self.models)}"
             )
 
-        kwargs: dict[str, Any] = {
-            "model": deployment,
-            "messages": [
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
-            "temperature": 0,
-        }
-        if json_mode:
-            kwargs["response_format"] = {"type": "json_object"}
+        if json_mode and "JSON" not in system:
+            # OpenAI rejects json_object mode unless "JSON" is in the messages.
+            suffix = "Respond with a single JSON object."
+            system = f"{system.rstrip()}\n\n{suffix}" if system.strip() else suffix
 
-        try:
-            response = await self._client.chat.completions.create(**kwargs)
-        except Exception as exc:
-            raise ModelError(f"Azure OpenAI call failed: {exc}") from exc
-
-        try:
-            text = response.choices[0].message.content or ""
-        except (AttributeError, IndexError, TypeError) as exc:
-            raise ModelError(f"Unexpected Azure OpenAI response shape: {exc}") from exc
-
-        usage = getattr(response, "usage", None)
-        input_tokens = (getattr(usage, "prompt_tokens", 0) or 0) if usage else 0
-        output_tokens = (getattr(usage, "completion_tokens", 0) or 0) if usage else 0
-
-        return ModelResponse(
-            text=text,
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            model_role=role,
+        return await _chat_complete(
+            self._client,
+            label="OpenAI",
+            model=model,
             step=step,
+            role=role,
+            system=system,
+            user=user,
+            json_mode=json_mode,
+            secret=self._api_key,
         )
 
 
-ALLOWED_PROVIDERS = ("azure", "fake")
+def _redact(message: str, secret: str | None) -> str:
+    if secret:
+        message = message.replace(secret, "***")
+    return message
 
-_AZURE_ENV_VARS = (
-    "AZURE_OPENAI_ENDPOINT",
-    "AZURE_OPENAI_API_KEY",
-    "AZURE_OPENAI_API_VERSION",
-    "MODEL_FAST_DEPLOYMENT",
-    "MODEL_STRONG_DEPLOYMENT",
+
+async def _chat_complete(
+    sdk_client: Any,
+    *,
+    label: str,
+    model: str,
+    step: str,
+    role: str,
+    system: str,
+    user: str,
+    json_mode: bool,
+    secret: str | None = None,
+) -> ModelResponse:
+    """Call chat.completions.create and build a ModelResponse.
+
+    Used by OpenAIClient. ``secret`` (if given) is scrubbed from any error
+    message.
+    """
+    kwargs: dict[str, Any] = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+    }
+    if json_mode:
+        kwargs["response_format"] = {"type": "json_object"}
+
+    try:
+        response = await sdk_client.chat.completions.create(**kwargs)
+    except Exception as exc:
+        raise ModelError(_redact(f"{label} call failed: {exc}", secret)) from exc
+
+    try:
+        text = response.choices[0].message.content or ""
+    except (AttributeError, IndexError, TypeError) as exc:
+        raise ModelError(
+            _redact(f"Unexpected {label} response shape: {exc}", secret)
+        ) from exc
+
+    usage = getattr(response, "usage", None)
+    input_tokens = (getattr(usage, "prompt_tokens", 0) or 0) if usage else 0
+    output_tokens = (getattr(usage, "completion_tokens", 0) or 0) if usage else 0
+
+    return ModelResponse(
+        text=text,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        model_role=role,
+        step=step,
+    )
+
+
+ALLOWED_PROVIDERS = ("openai", "fake")
+
+_OPENAI_ENV_VARS = (
+    "OPENAI_API_KEY",
+    "OPENAI_MODEL_FAST",
+    "OPENAI_MODEL_STRONG",
 )
-
 
 def get_model_client() -> ModelClient:
     """Build the model client chosen by the MODEL_PROVIDER env variable."""
     # override=False: variables already in the environment (e.g. set by the
     # test fixture or the shell) always win over values in .env.
     load_dotenv(override=False)
-    provider = (os.getenv("MODEL_PROVIDER") or "azure").strip().lower()
+    provider = (os.getenv("MODEL_PROVIDER") or "openai").strip().lower()
 
     if provider == "fake":
         # Empty script for now; we will give it demo replies in the
         # pipeline branch.
         return FakeModel(script={})
 
-    if provider == "azure":
-        values = {name: (os.getenv(name) or "").strip() for name in _AZURE_ENV_VARS}
+    if provider == "openai":
+        values = {name: (os.getenv(name) or "").strip() for name in _OPENAI_ENV_VARS}
         missing = [name for name, value in values.items() if not value]
         if missing:
             # Only variable names are reported, never values.
             raise ModelError(
-                "Missing Azure OpenAI environment variables: " + ", ".join(missing)
+                "Missing OpenAI environment variables: " + ", ".join(missing)
             )
-        return AzureOpenAIClient(
-            endpoint=values["AZURE_OPENAI_ENDPOINT"],
-            api_key=values["AZURE_OPENAI_API_KEY"],
-            api_version=values["AZURE_OPENAI_API_VERSION"],
-            deployments={
-                "fast": values["MODEL_FAST_DEPLOYMENT"],
-                "strong": values["MODEL_STRONG_DEPLOYMENT"],
+        return OpenAIClient(
+            api_key=values["OPENAI_API_KEY"],
+            models={
+                "fast": values["OPENAI_MODEL_FAST"],
+                "strong": values["OPENAI_MODEL_STRONG"],
             },
         )
 

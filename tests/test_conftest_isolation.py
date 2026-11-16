@@ -5,11 +5,6 @@ import os
 from app.model_client import FakeModel, get_model_client
 
 SECRET_VARS = (
-    "AZURE_OPENAI_ENDPOINT",
-    "AZURE_OPENAI_API_KEY",
-    "AZURE_OPENAI_API_VERSION",
-    "MODEL_FAST_DEPLOYMENT",
-    "MODEL_STRONG_DEPLOYMENT",
     "OPENAI_API_KEY",
 )
 

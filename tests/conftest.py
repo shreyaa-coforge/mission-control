@@ -11,12 +11,9 @@ import pytest
 import app.model_client as mc
 
 _MODEL_ENV_VARS = (
-    "AZURE_OPENAI_ENDPOINT",
-    "AZURE_OPENAI_API_KEY",
-    "AZURE_OPENAI_API_VERSION",
-    "MODEL_FAST_DEPLOYMENT",
-    "MODEL_STRONG_DEPLOYMENT",
     "OPENAI_API_KEY",
+    "OPENAI_MODEL_FAST",
+    "OPENAI_MODEL_STRONG",
 )
 
 

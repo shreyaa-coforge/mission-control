@@ -90,11 +90,12 @@ def brief_by_minutes(severity: str, has_violation: bool) -> int:
 
 
 # US dollars per 1 million tokens, keyed by model role.
-# PLACEHOLDERS: update these from the Azure OpenAI pricing page for the
-# actual deployments before relying on the cost figures.
+# PLACEHOLDERS: update these from the OpenAI API pricing page for the
+# models set in OPENAI_MODEL_FAST and OPENAI_MODEL_STRONG before relying on
+# the cost figures.
 PRICES_PER_MILLION = {
-    "fast": {"input": 0.15, "output": 0.60},
-    "strong": {"input": 2.50, "output": 10.00},
+    "fast": {"input": 0.10, "output": 0.50},
+    "strong": {"input": 1.00, "output": 5.00},
 }
 
 

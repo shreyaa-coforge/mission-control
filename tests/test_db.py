@@ -301,3 +301,69 @@ def test_needs_review_false_round_trips_as_bool(db_path):
     assert saved["needs_review"] is False
     assert saved["review_reasons"] == []
     assert saved["checks"] == {}
+
+
+# --- Briefings ----------------------------------------------------------------
+
+_BRIEFING = {
+    "headline": "Wind over limit",
+    "summary": "Wind is 30 knots, above the 25 knot limit.",
+    "recommended_action": "Hold until wind drops.",
+    "rounds_used": 2,
+    "review_passed": True,
+    "last_feedback": "Looks good.",
+    "draft_fallback": False,
+}
+
+
+def _result_with_briefing():
+    result = _pipeline_result()
+    result.briefing = dict(_BRIEFING)
+    result.briefing_text = "VERDICT: NO_GO\nWind over limit"
+    return result
+
+
+def test_briefings_table_round_trips(db_path):
+    from app.db import get_briefing, save_pipeline_result
+
+    assert "briefings" in _table_names(db_path)
+    report = save_report(db_path, _report())
+    save_pipeline_result(db_path, report["id"], _result_with_briefing())
+
+    saved = get_briefing(db_path, report["id"])
+    assert saved["report_id"] == report["id"]
+    for key, value in _BRIEFING.items():
+        assert saved[key] == value
+    assert saved["full_text"] == "VERDICT: NO_GO\nWind over limit"
+    assert saved["status"] == "pending"
+    assert saved["approved_by"] is None
+    assert saved["approved_at"] is None
+    assert saved["review_acknowledged"] is False
+    assert isinstance(saved["created_at"], str)
+
+
+def test_get_briefing_unknown_report_returns_none(db_path):
+    from app.db import get_briefing
+
+    assert get_briefing(db_path, 9999) is None
+
+
+def test_briefing_survives_restart(tmp_path):
+    from app.db import approve_briefing, get_briefing, save_pipeline_result
+
+    path = str(tmp_path / "restart.db")
+    init_db(path)
+    report = save_report(path, _report())
+    save_pipeline_result(path, report["id"], _result_with_briefing())
+    before = get_briefing(path, report["id"])
+
+    # "Restart": init_db again and read through brand new connections.
+    init_db(path)
+    assert get_briefing(path, report["id"]) == before
+    assert before["status"] == "pending"
+
+    approve_briefing(path, report["id"], "Flight Director")
+    init_db(path)
+    after = get_briefing(path, report["id"])
+    assert after["status"] == "approved"
+    assert after["approved_by"] == "Flight Director"

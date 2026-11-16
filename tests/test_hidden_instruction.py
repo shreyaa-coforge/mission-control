@@ -51,6 +51,13 @@ def _model(injection_flagged: bool) -> FakeModel:
             ),
             "check_missing": _check(False),
             "check_panic": _check(False),
+            "draft": json.dumps(
+                {"headline": "Valve 3", "summary": "Valve 3 pressure fine.",
+                 "recommended_action": "Review the note."}
+            ),
+            "review": json.dumps(
+                {"passed": True, "feedback": "Fine.", "issues": []}
+            ),
         }
     )
 

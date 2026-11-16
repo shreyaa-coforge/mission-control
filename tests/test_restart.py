@@ -21,6 +21,13 @@ def fake_model() -> FakeModel:
             "check_injection": check,
             "check_missing": check,
             "check_panic": check,
+            "draft": json.dumps(
+                {"headline": "Gusts", "summary": "Gusty winds.",
+                 "recommended_action": "Recheck wind."}
+            ),
+            "review": json.dumps(
+                {"passed": True, "feedback": "Fine.", "issues": []}
+            ),
         }
     )
 

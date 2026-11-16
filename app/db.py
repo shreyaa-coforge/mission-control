@@ -25,6 +25,25 @@ _REPORT_COLUMNS = (
 )
 
 
+class BriefingNotFound(Exception):
+    """There is no briefing for this report."""
+
+
+class AlreadyApproved(Exception):
+    """The briefing is not pending, so it cannot be approved again."""
+
+
+class ReviewRequired(Exception):
+    """The report needs human review; the approver must confirm reviewed."""
+
+
+_BRIEFING_COLUMNS = (
+    "report_id, headline, summary, recommended_action, full_text, status, "
+    "rounds_used, review_passed, last_feedback, draft_fallback, "
+    "approved_by, approved_at, review_acknowledged, created_at"
+)
+
+
 def _connect(db_path: str) -> sqlite3.Connection:
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
@@ -52,7 +71,6 @@ def _migrate_results(conn: sqlite3.Connection) -> None:
 
 def init_db(db_path: str) -> None:
     """Create the tables if they do not exist. Safe to call more than once."""
-    # A later branch will add the briefings table here.
     with closing(_connect(db_path)) as conn, conn:
         conn.execute(
             """
@@ -102,6 +120,26 @@ def init_db(db_path: str) -> None:
                 cost REAL NOT NULL,
                 summary TEXT NOT NULL,
                 detail_json TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS briefings (
+                report_id INTEGER PRIMARY KEY REFERENCES reports(id),
+                headline TEXT,
+                summary TEXT,
+                recommended_action TEXT,
+                full_text TEXT,
+                status TEXT NOT NULL,  -- "pending" or "approved"
+                rounds_used INTEGER,
+                review_passed INTEGER,  -- 0 or 1; reviewer only, NOT approval
+                last_feedback TEXT,
+                draft_fallback INTEGER,  -- 0 or 1
+                approved_by TEXT,
+                approved_at TEXT,  -- UTC ISO 8601 timestamp
+                review_acknowledged INTEGER,  -- 0 or 1
+                created_at TEXT  -- UTC ISO 8601 timestamp
             )
             """
         )
@@ -187,7 +225,12 @@ def list_reports_with_results(db_path: str) -> list[dict]:
 def save_pipeline_result(
     db_path: str, report_id: int, result: PipelineResult
 ) -> None:
-    """Save a pipeline result and all its trace steps in one transaction."""
+    """Save a pipeline result, its trace steps and its briefing in one
+    transaction.
+
+    The briefing is ALWAYS saved with status "pending", whatever the reviewer
+    said. Only approve_briefing(), called for a human, can change that.
+    """
     created_at = datetime.now(timezone.utc).isoformat()
     with closing(_connect(db_path)) as conn, conn:
         conn.execute(
@@ -238,6 +281,31 @@ def save_pipeline_result(
                 for s in result.trace
             ],
         )
+        briefing = result.briefing
+        if briefing is not None:
+            conn.execute(
+                """
+                INSERT INTO briefings
+                    (report_id, headline, summary, recommended_action,
+                     full_text, status, rounds_used, review_passed,
+                     last_feedback, draft_fallback, approved_by, approved_at,
+                     review_acknowledged, created_at)
+                VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, NULL, NULL,
+                        0, ?)
+                """,
+                (
+                    report_id,
+                    briefing["headline"],
+                    briefing["summary"],
+                    briefing["recommended_action"],
+                    result.briefing_text,
+                    briefing["rounds_used"],
+                    int(briefing["review_passed"]),
+                    briefing["last_feedback"],
+                    int(briefing["draft_fallback"]),
+                    created_at,
+                ),
+            )
 
 
 def get_result(db_path: str, report_id: int) -> dict | None:
@@ -285,3 +353,68 @@ def get_trace(db_path: str, report_id: int) -> list[dict]:
         data["detail"] = json.loads(data.pop("detail_json"))
         steps.append(data)
     return steps
+
+
+def _briefing_from_row(row: sqlite3.Row) -> dict:
+    data = dict(row)
+    for key in ("review_passed", "draft_fallback", "review_acknowledged"):
+        data[key] = bool(data[key])
+    return data
+
+
+def get_briefing(db_path: str, report_id: int) -> dict | None:
+    """Return a report's briefing, or None if it has none."""
+    with closing(_connect(db_path)) as conn:
+        row = conn.execute(
+            f"SELECT {_BRIEFING_COLUMNS} FROM briefings WHERE report_id = ?",
+            (report_id,),
+        ).fetchone()
+    return _briefing_from_row(row) if row is not None else None
+
+
+def approve_briefing(
+    db_path: str, report_id: int, approved_by: str, reviewed: bool = False
+) -> dict:
+    """Mark a pending briefing approved on behalf of a named human.
+
+    This must only be called from the human-triggered approve route, never
+    from the pipeline. It only changes the briefings table; the result
+    (verdict, violations, ...) is never touched.
+
+    Raises BriefingNotFound, AlreadyApproved, or ReviewRequired (when the
+    report needs review and ``reviewed`` is not True).
+    """
+    approved_at = datetime.now(timezone.utc).isoformat()
+    with closing(_connect(db_path)) as conn, conn:
+        row = conn.execute(
+            "SELECT status FROM briefings WHERE report_id = ?", (report_id,)
+        ).fetchone()
+        if row is None:
+            raise BriefingNotFound(report_id)
+        if row["status"] != "pending":
+            raise AlreadyApproved(report_id)
+        result = conn.execute(
+            "SELECT needs_review FROM results WHERE report_id = ?",
+            (report_id,),
+        ).fetchone()
+        # Fail safe: with no result row, treat the report as needing review.
+        needs_review = result is None or bool(result["needs_review"])
+        if needs_review and reviewed is not True:
+            raise ReviewRequired(report_id)
+        cursor = conn.execute(
+            """
+            UPDATE briefings
+            SET status = 'approved', approved_by = ?, approved_at = ?,
+                review_acknowledged = ?
+            WHERE report_id = ? AND status = 'pending'
+            """,
+            (approved_by, approved_at, int(reviewed is True), report_id),
+        )
+        if cursor.rowcount != 1:
+            # Another approval got in between the check and the update.
+            raise AlreadyApproved(report_id)
+        row = conn.execute(
+            f"SELECT {_BRIEFING_COLUMNS} FROM briefings WHERE report_id = ?",
+            (report_id,),
+        ).fetchone()
+    return _briefing_from_row(row)

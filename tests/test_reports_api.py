@@ -325,12 +325,16 @@ def test_unexpected_pipeline_crash_keeps_report_saved(db_path, monkeypatch, capl
 
         report_id = body["report"]["id"]
         one = c.get(f"/reports/{report_id}").json()
-        assert one == {"report": body["report"], "result": None, "trace": []}
+        assert one == {
+            "report": body["report"], "result": None, "trace": [], "briefing": None,
+        }
+        assert body["briefing"] is None
 
         item = c.get("/reports").json()["reports"][0]
         assert item["id"] == report_id
         for field in RESULT_SUMMARY_FIELDS:
             assert item[field] is None
+        assert item["briefing_status"] is None
 
 
 def test_get_report_returns_same_result_and_trace_as_post(client):
@@ -342,6 +346,7 @@ def test_get_report_returns_same_result_and_trace_as_post(client):
         "report": posted["report"],
         "result": posted["result"],
         "trace": posted["trace"],
+        "briefing": posted["briefing"],
     }
 
 
@@ -444,3 +449,42 @@ def test_create_app_with_fake_provider_flags_hidden_instruction():
     assert body["result"]["verdict"] == "no_go"
     assert body["result"]["needs_review"] is True
     assert [s["step"] for s in body["trace"]] == ALL_STEPS
+
+
+# --- Briefing in the API --------------------------------------------------
+
+BRIEFING_FIELDS = ("status", "full_text", "rounds_used", "review_passed",
+                   "approved_by", "approved_at")
+
+
+def test_post_report_returns_pending_briefing(client):
+    body = client.post("/reports", json=VALID_REPORT).json()
+    briefing = body["briefing"]
+    for field in BRIEFING_FIELDS:
+        assert field in briefing
+    assert briefing["status"] == "pending"
+    assert briefing["review_passed"] is True  # reviewer passed, still pending
+    assert briefing["rounds_used"] == 1
+    assert briefing["approved_by"] is None
+    assert briefing["approved_at"] is None
+    assert "Engine 2 vibration" in briefing["full_text"]
+
+
+def test_get_report_returns_same_briefing_as_post(client):
+    posted = client.post("/reports", json=VALID_REPORT).json()
+    got = client.get(f"/reports/{posted['report']['id']}").json()
+    assert got["briefing"] == posted["briefing"]
+
+
+def test_list_includes_briefing_status(client):
+    posted = client.post("/reports", json=VALID_REPORT).json()
+    item = client.get("/reports").json()["reports"][0]
+    assert item["id"] == posted["report"]["id"]
+    assert item["briefing_status"] == "pending"
+
+    client.post(
+        f"/briefings/{posted['report']['id']}/approve",
+        json={"approved_by": "Flight Director Rao"},
+    )
+    item = client.get("/reports").json()["reports"][0]
+    assert item["briefing_status"] == "approved"

@@ -286,16 +286,16 @@ DEMO_SCRIPT: dict[str, Any] = {
     "check_panic": _DEMO_CHECK_REPLY,
     "draft": json.dumps(
         {
-            "headline": "Demo briefing",
-            "summary": "Demo mode reply, no real model was called.",
-            "recommended_action": "Review the raw report before deciding.",
+            "headline": "Demo mode briefing",
+            "summary": "Demo mode draft, no real model was called.",
+            "recommended_action": "Demo mode: review the raw report before deciding.",
         }
     ),
     # "passed" is a reviewer mark only; it never approves the briefing.
     "review": json.dumps(
         {
             "passed": True,
-            "feedback": "Demo mode reply, no real model was called.",
+            "feedback": "Demo mode review.",
             "issues": [],
         }
     ),

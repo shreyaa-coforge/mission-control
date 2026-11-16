@@ -9,6 +9,11 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.db import (
+    AlreadyApproved,
+    BriefingNotFound,
+    ReviewRequired,
+    approve_briefing,
+    get_briefing,
     get_report,
     get_result,
     get_trace,
@@ -19,17 +24,22 @@ from app.db import (
 )
 from app.model_client import ModelClient, get_model_client
 from app.pipeline import run_pipeline
-from app.schemas import ReportIn, format_validation_errors
+from app.schemas import ApproveRequest, ReportIn, format_validation_errors
 
 logger = logging.getLogger(__name__)
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 DEFAULT_DB_PATH = "mission_control.db"
 
-INVALID_JSON_BODY = {
-    "error": "Invalid report",
-    "details": [{"field": "body", "message": "request body must be valid JSON"}],
-}
+INVALID_JSON_DETAILS = [
+    {"field": "body", "message": "request body must be valid JSON"}
+]
+INVALID_JSON_BODY = {"error": "Invalid report", "details": INVALID_JSON_DETAILS}
+
+REVIEW_REQUIRED_MESSAGE = (
+    "This report was flagged for review. Confirm you reviewed it by sending "
+    "reviewed: true."
+)
 
 
 def create_app(
@@ -68,6 +78,7 @@ def create_app(
             "report": report,
             "result": get_result(app.state.db_path, report_id),
             "trace": get_trace(app.state.db_path, report_id),
+            "briefing": get_briefing(app.state.db_path, report_id),
         }
 
     @app.exception_handler(RequestValidationError)
@@ -76,9 +87,19 @@ def create_app(
     ) -> JSONResponse:
         # A body that is not JSON at all gets one fixed, plain message rather
         # than whatever partial errors the parser produced.
+        error = (
+            "Invalid approval"
+            if request.url.path.startswith("/briefings/")
+            else "Invalid report"
+        )
         if any(err.get("type") == "json_invalid" for err in exc.errors()):
-            return JSONResponse(status_code=422, content=INVALID_JSON_BODY)
-        return JSONResponse(status_code=422, content=format_validation_errors(exc))
+            return JSONResponse(
+                status_code=422,
+                content={"error": error, "details": INVALID_JSON_DETAILS},
+            )
+        return JSONResponse(
+            status_code=422, content=format_validation_errors(exc, error)
+        )
 
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
@@ -105,6 +126,7 @@ def create_app(
                 "report": saved,
                 "result": None,
                 "trace": [],
+                "briefing": None,
                 "error": "The report was saved, but the pipeline failed. "
                 "See the server log for details.",
             }
@@ -123,6 +145,36 @@ def create_app(
                 content={"error": "Report not found", "report_id": report_id},
             )
         return view
+
+    # This is the ONLY code path that approves a briefing. It is triggered by
+    # a person in the console; the pipeline and the reviewer model never call
+    # it. It only changes the briefing, never the verdict or the result.
+    @app.post("/briefings/{report_id}/approve")
+    def approve(report_id: int, body: ApproveRequest):
+        try:
+            approve_briefing(
+                app.state.db_path, report_id, body.approved_by, body.reviewed
+            )
+        except BriefingNotFound:
+            return JSONResponse(
+                status_code=404,
+                content={"error": "Briefing not found", "report_id": report_id},
+            )
+        except AlreadyApproved:
+            return JSONResponse(
+                status_code=409,
+                content={"error": "Briefing is already approved"},
+            )
+        except ReviewRequired:
+            result = get_result(app.state.db_path, report_id)
+            return JSONResponse(
+                status_code=409,
+                content={
+                    "error": REVIEW_REQUIRED_MESSAGE,
+                    "review_reasons": result["review_reasons"] if result else [],
+                },
+            )
+        return get_briefing(app.state.db_path, report_id)
 
     return app
 

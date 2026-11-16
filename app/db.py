@@ -197,7 +197,7 @@ def list_reports_with_results(db_path: str) -> list[dict]:
 
     Result fields (subsystem, severity, effective_severity, verdict,
     brief_by_minutes, total_cost, needs_review) are None when a report has
-    no result yet.
+    no result yet; briefing_status is None when it has no briefing.
     """
     report_cols = ", ".join(f"r.{c.strip()}" for c in _REPORT_COLUMNS.split(","))
     with closing(_connect(db_path)) as conn:
@@ -206,9 +206,10 @@ def list_reports_with_results(db_path: str) -> list[dict]:
             SELECT {report_cols},
                    res.subsystem, res.severity, res.effective_severity,
                    res.verdict, res.brief_by_minutes, res.total_cost,
-                   res.needs_review
+                   res.needs_review, b.status AS briefing_status
             FROM reports AS r
             LEFT JOIN results AS res ON res.report_id = r.id
+            LEFT JOIN briefings AS b ON b.report_id = r.id
             ORDER BY r.created_at DESC, r.id DESC
             """
         ).fetchall()

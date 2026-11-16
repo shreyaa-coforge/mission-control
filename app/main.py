@@ -111,6 +111,10 @@ def create_app(
     def index() -> FileResponse:
         return FileResponse(STATIC_DIR / "index.html")
 
+    @app.get("/file", include_in_schema=False)
+    def file_page() -> FileResponse:
+        return FileResponse(STATIC_DIR / "file.html")
+
     @app.post("/reports", status_code=201)
     async def create_report(report: ReportIn) -> dict:
         # Save first: the report must be kept even if the pipeline fails.

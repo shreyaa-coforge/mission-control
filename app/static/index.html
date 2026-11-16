@@ -3,10 +3,38 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Mission Control</title>
+  <title>Console - Mission Control</title>
+  <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
-  <h1>Mission Control</h1>
-  <p>Console coming soon</p>
+  <header class="topbar">
+    <div>
+      <h1>Mission Control</h1>
+      <p class="subtitle">Meridian Launch Services</p>
+    </div>
+    <nav aria-label="Main">
+      <a href="/" class="current" aria-current="page">Console</a>
+      <a href="/file">File a report</a>
+    </nav>
+  </header>
+
+  <main class="console">
+    <section class="panel list-panel" aria-labelledby="list-title">
+      <div class="list-header">
+        <h2 id="list-title">Reports</h2>
+        <span id="list-status" class="list-status muted" role="status" aria-live="polite"></span>
+      </div>
+      <ul id="reports-list" class="report-list">
+        <li class="empty">Loading...</li>
+      </ul>
+    </section>
+
+    <section id="report-detail" class="panel detail" aria-live="polite">
+      <p class="muted">Select a report from the list.</p>
+    </section>
+  </main>
+
+  <script src="/static/common.js"></script>
+  <script src="/static/console.js"></script>
 </body>
 </html>

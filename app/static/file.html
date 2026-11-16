@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>File a report - Mission Control</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <h1>Mission Control</h1>
+      <p class="subtitle">Meridian Launch Services</p>
+    </div>
+    <nav aria-label="Main">
+      <a href="/">Console</a>
+      <a href="/file" class="current" aria-current="page">File a report</a>
+    </nav>
+  </header>
+
+  <main class="form-page">
+    <div id="success-panel" class="notice notice-success hidden" role="status" aria-live="polite"></div>
+
+    <form id="report-form" class="panel" novalidate>
+      <h2>File a launch readiness report</h2>
+
+      <div id="form-summary" class="notice notice-error hidden" role="alert" tabindex="-1"></div>
+
+      <div class="form-grid">
+        <div class="field">
+          <label for="name">Name</label>
+          <input type="text" id="name" name="name" maxlength="100" autocomplete="name" aria-describedby="name-error">
+          <div class="field-error" id="name-error"></div>
+        </div>
+        <div class="field">
+          <label for="station">Station</label>
+          <input type="text" id="station" name="station" maxlength="100" aria-describedby="station-error">
+          <div class="field-error" id="station-error"></div>
+        </div>
+      </div>
+
+      <div class="form-grid">
+        <div class="field">
+          <label for="wind_knots">Wind (knots)</label>
+          <input type="number" id="wind_knots" name="wind_knots" step="any" inputmode="decimal" aria-describedby="wind_knots-error limits-help">
+          <div class="field-error" id="wind_knots-error"></div>
+        </div>
+        <div class="field">
+          <label for="temp_c">Temperature (C)</label>
+          <input type="number" id="temp_c" name="temp_c" step="any" inputmode="decimal" aria-describedby="temp_c-error limits-help">
+          <div class="field-error" id="temp_c-error"></div>
+        </div>
+        <div class="field">
+          <label for="fuel_pct">Fuel (%)</label>
+          <input type="number" id="fuel_pct" name="fuel_pct" step="any" inputmode="decimal" aria-describedby="fuel_pct-error limits-help">
+          <div class="field-error" id="fuel_pct-error"></div>
+        </div>
+      </div>
+      <p class="help" id="limits-help">Limits: wind 25 knots or less, temp 4 C or more, fuel 98 to 100 %</p>
+
+      <div class="field">
+        <label for="note">Note</label>
+        <textarea id="note" name="note" maxlength="2000" aria-describedby="note-error note-counter"></textarea>
+        <div class="counter" id="note-counter" aria-live="polite">0 / 2000</div>
+        <div class="field-error" id="note-error"></div>
+      </div>
+
+      <button type="submit" id="submit-btn">File report</button>
+    </form>
+  </main>
+
+  <script src="/static/common.js"></script>
+  <script src="/static/file.js"></script>
+</body>
+</html>

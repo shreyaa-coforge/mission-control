@@ -1,7 +1,8 @@
 # Mission Control: Go/No-Go Launch Console
 
 Stack: Python 3.11+, FastAPI, SQLite, plain HTML/JS front end served by FastAPI,
-Azure OpenAI via the official `openai` package, pytest for tests.
+the OpenAI API via the official `openai` package (`MODEL_PROVIDER` set to
+`openai` or `fake`), pytest for tests.
 
 ## Permanent project rules
 

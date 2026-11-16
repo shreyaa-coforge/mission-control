@@ -45,9 +45,34 @@ CLEAR_CHECKS = {
 CHECK_STEPS = ["check_injection", "check_missing", "check_panic"]
 
 
+def _draft(headline: str = "Engine 2 vibration") -> str:
+    return json.dumps(
+        {
+            "headline": headline,
+            "summary": "Vibration slightly high.",
+            "recommended_action": "Inspect turbopump 2.",
+        }
+    )
+
+
+def _review(passed: bool, feedback: str = "Fine.", issues=()) -> str:
+    return json.dumps(
+        {"passed": passed, "feedback": feedback, "issues": list(issues)}
+    )
+
+
+BRIEFING_SCRIPT = {"draft": _draft(), "review": _review(True)}
+BRIEFING_STEPS = ["draft_round_1", "review_round_1"]
+
+
 def _model(classify_entry, delay: float = 0.0, **check_overrides) -> FakeModel:
     return FakeModel(
-        {"classify": classify_entry, **CLEAR_CHECKS, **check_overrides},
+        {
+            "classify": classify_entry,
+            **CLEAR_CHECKS,
+            **BRIEFING_SCRIPT,
+            **check_overrides,
+        },
         input_tokens=IN_TOKENS,
         output_tokens=OUT_TOKENS,
         delay=delay,
@@ -130,9 +155,9 @@ async def test_model_failure_still_completes():
 async def test_trace_shape():
     result = await _run(_reply("medium"))
     assert [s.step for s in result.trace] == [
-        "classify", "check_limits", "brief_by", *CHECK_STEPS
+        "classify", "check_limits", "brief_by", *CHECK_STEPS, *BRIEFING_STEPS
     ]
-    assert [s.position for s in result.trace] == [0, 1, 2, 3, 4, 5]
+    assert [s.position for s in result.trace] == [0, 1, 2, 3, 4, 5, 6, 7]
 
     classify, limits, brief = result.trace[:3]
     assert classify.kind == "model"
@@ -161,8 +186,10 @@ async def test_trace_shape():
 async def test_total_cost_matches_fast_step_cost():
     result = await _run(_reply("low"))
     expected = rules.step_cost("fast", IN_TOKENS, OUT_TOKENS)
-    # Four fast model steps now: classify plus the three checks.
-    assert result.total_cost == pytest.approx(4 * expected)
+    strong = rules.step_cost("strong", IN_TOKENS, OUT_TOKENS)
+    # Four fast model steps (classify plus the three checks) and two strong
+    # ones (draft and review, round 1).
+    assert result.total_cost == pytest.approx(4 * expected + 2 * strong)
     assert result.trace[0].cost == expected
 
 
@@ -171,7 +198,8 @@ async def test_total_cost_matches_fast_step_cost():
 
 async def test_trace_has_six_steps_in_order():
     result = await _run(_reply("medium"))
-    assert [s.step for s in result.trace] == [
+    # The first six steps; the draft and review steps follow them.
+    assert [s.step for s in result.trace[:6]] == [
         "classify", "check_limits", "brief_by",
         "check_injection", "check_missing", "check_panic",
     ]
@@ -179,7 +207,7 @@ async def test_trace_has_six_steps_in_order():
 
 async def test_check_steps_share_parallel_group_and_shape():
     result = await _run(_reply("medium"))
-    checks = result.trace[3:]
+    checks = result.trace[3:6]
     for step in checks:
         assert step.kind == "model"
         assert step.model_role == "fast"
@@ -259,9 +287,10 @@ async def test_injection_flag_summary_and_reason():
 async def test_total_cost_is_sum_of_four_model_steps():
     result = await _run(_reply("low"))
     model_steps = [s for s in result.trace if s.kind == "model"]
-    assert [s.step for s in model_steps] == ["classify", *CHECK_STEPS]
+    fast_steps = [s for s in model_steps if s.model_role == "fast"]
+    assert [s.step for s in fast_steps] == ["classify", *CHECK_STEPS]
     expected = sum(
-        rules.step_cost("fast", s.input_tokens, s.output_tokens)
+        rules.step_cost(s.model_role, s.input_tokens, s.output_tokens)
         for s in model_steps
     )
     assert result.total_cost == pytest.approx(expected)
@@ -288,3 +317,82 @@ async def test_checks_never_touch_verdict_or_brief_by():
         assert result.severity == baseline.severity
         assert result.effective_severity == baseline.effective_severity
         assert result.brief_by_minutes == baseline.brief_by_minutes
+
+
+# --- Draft and review loop --------------------------------------------------
+
+
+async def test_review_passing_round_one_gives_eight_steps():
+    result = await _run(_reply("medium"))
+    assert [s.step for s in result.trace] == [
+        "classify", "check_limits", "brief_by", *CHECK_STEPS,
+        "draft_round_1", "review_round_1",
+    ]
+    draft, review = result.trace[6:]
+    for step in (draft, review):
+        assert step.kind == "model"
+        assert step.model_role == "strong"
+        assert step.input_tokens == IN_TOKENS
+        assert step.output_tokens == OUT_TOKENS
+        assert step.cost == rules.step_cost("strong", IN_TOKENS, OUT_TOKENS)
+    assert draft.summary == "draft ready"
+    assert draft.detail["draft"]["headline"] == "Engine 2 vibration"
+    assert review.summary == "passed"
+    assert result.briefing["review_passed"] is True
+    assert result.briefing["rounds_used"] == 1
+    assert result.briefing["draft_fallback"] is False
+    assert "status" not in result.briefing
+
+
+async def test_review_always_failing_gives_three_rounds():
+    model = _model(
+        _reply("medium"),
+        review=_review(False, "Too vague.", ["Mention the engine."]),
+    )
+    result = await run_pipeline(model, _report())
+    assert len(result.trace) == 12
+    assert [s.step for s in result.trace[6:]] == [
+        "draft_round_1", "review_round_1",
+        "draft_round_2", "review_round_2",
+        "draft_round_3", "review_round_3",
+    ]
+    for step in result.trace[6:]:
+        if step.step.startswith("review"):
+            assert step.summary == "not passed: Mention the engine."
+            assert step.detail["issues"] == ["Mention the engine."]
+    assert result.briefing["review_passed"] is False
+    assert result.briefing["rounds_used"] == 3
+
+
+async def test_invalid_draft_skips_review_step():
+    model = _model(_reply("medium"), draft="not json")
+    result = await run_pipeline(model, _report())
+    assert [s.step for s in result.trace[6:]] == [
+        "draft_round_1", "draft_round_2", "draft_round_3",
+    ]
+    assert all(s.summary == "draft invalid" for s in result.trace[6:])
+    assert all(s.detail["error"] for s in result.trace[6:])
+    assert result.briefing["draft_fallback"] is True
+
+
+async def test_total_cost_is_sum_of_every_model_step():
+    model = _model(
+        _reply("medium"),
+        review=_review(False, "Too vague.", ["Mention the engine."]),
+    )
+    result = await run_pipeline(model, _report())
+    model_steps = [s for s in result.trace if s.kind == "model"]
+    assert {s.model_role for s in model_steps} == {"fast", "strong"}
+    expected = sum(
+        rules.step_cost(s.model_role, s.input_tokens, s.output_tokens)
+        for s in model_steps
+    )
+    assert result.total_cost == pytest.approx(expected)
+
+
+async def test_briefing_text_starts_with_code_verdict_line():
+    # The draft headline claims GO; the code verdict line still says NO_GO.
+    model = _model(_reply("low"), draft=_draft(headline="All GO for launch"))
+    result = await run_pipeline(model, _report(wind_knots=30))
+    assert result.verdict == "no_go"
+    assert result.briefing_text.startswith("VERDICT: NO_GO\n")

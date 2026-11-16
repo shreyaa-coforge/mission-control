@@ -29,6 +29,7 @@ TEXT_MAX_LENGTHS: dict[str, int] = {
     "name": 100,
     "station": 100,
     "note": 2000,
+    "approved_by": 100,
 }
 
 
@@ -127,6 +128,61 @@ class CheckReply(BaseModel):
     ] = Field(default_factory=list, max_length=CHECK_DETAILS_MAX_ITEMS)
 
 
+# --- Briefing draft and review (model writes prose only) ----------------
+
+DRAFT_HEADLINE_MAX_LENGTH = 120
+DRAFT_SUMMARY_MAX_LENGTH = 800
+DRAFT_ACTION_MAX_LENGTH = 300
+REVIEW_FEEDBACK_MAX_LENGTH = 500
+REVIEW_ISSUES_MAX_ITEMS = 10
+
+
+class DraftReply(BaseModel):
+    """Briefing prose written by the model. Extra keys (for example
+    "verdict") are ignored: the verdict and every other fact are rendered
+    by code, never taken from the model."""
+
+    model_config = ConfigDict(extra="ignore", str_strip_whitespace=True)
+
+    headline: str = Field(min_length=1, max_length=DRAFT_HEADLINE_MAX_LENGTH)
+    summary: str = Field(min_length=1, max_length=DRAFT_SUMMARY_MAX_LENGTH)
+    recommended_action: str = Field(
+        min_length=1, max_length=DRAFT_ACTION_MAX_LENGTH
+    )
+
+
+class ReviewReply(BaseModel):
+    """The reviewer model's verdict on a draft. ``passed`` only means the
+    draft passed review; it is never an approval. ``passed`` is strict, so
+    "yes" or 1 is invalid. Extra keys are ignored."""
+
+    model_config = ConfigDict(extra="ignore", str_strip_whitespace=True)
+
+    passed: bool = Field(strict=True)
+    feedback: str = Field(min_length=1, max_length=REVIEW_FEEDBACK_MAX_LENGTH)
+    issues: list[str] = Field(
+        default_factory=list, max_length=REVIEW_ISSUES_MAX_ITEMS
+    )
+
+
+# --- Human approval of a briefing ---------------------------------------
+
+
+class ApproveRequest(BaseModel):
+    """Body for POST /briefings/{report_id}/approve, sent by a person.
+
+    ``reviewed`` is strict: only a real JSON true confirms the person
+    reviewed a flagged report, so "yes" or 1 is rejected.
+    """
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    approved_by: str = Field(
+        min_length=1, max_length=TEXT_MAX_LENGTHS["approved_by"]
+    )
+    reviewed: bool = Field(default=False, strict=True)
+
+
 # --- Plain-language error formatting -------------------------------------
 
 _NOT_A_NUMBER = {"float_type", "float_parsing", "bool_not_number"}
@@ -135,6 +191,7 @@ _OUT_OF_RANGE = {"greater_than_equal", "less_than_equal", "greater_than", "less_
 _NOT_TEXT = {"string_type"}
 _TOO_SHORT = {"string_too_short"}
 _TOO_LONG = {"string_too_long"}
+_NOT_BOOL = {"bool_type", "bool_parsing"}
 
 # Location prefixes FastAPI adds in front of the field name.
 _LOC_PREFIXES = {"body", "query", "path", "header", "cookie"}
@@ -159,6 +216,8 @@ def _message_for(field: str, err_type: str) -> str:
     if err_type in _OUT_OF_RANGE and field in READING_RANGES:
         lo, hi = READING_RANGES[field]
         return f"{field} must be between {lo:g} and {hi:g}"
+    if err_type in _NOT_BOOL:
+        return f"{field} must be true or false"
     if err_type in _NOT_TEXT:
         return f"{field} must be text"
     if err_type in _TOO_SHORT:
@@ -172,9 +231,9 @@ def _message_for(field: str, err_type: str) -> str:
     return f"{field} is invalid"
 
 
-def format_validation_errors(exc: Any) -> dict:
+def format_validation_errors(exc: Any, error: str = "Invalid report") -> dict:
     """Turn a Pydantic ValidationError or FastAPI RequestValidationError into
-    {"error": "Invalid report", "details": [{"field": ..., "message": ...}]}.
+    {"error": error, "details": [{"field": ..., "message": ...}]}.
 
     Each bad field appears once, in plain words, with no Pydantic internals.
     """
@@ -197,4 +256,4 @@ def format_validation_errors(exc: Any) -> dict:
         seen.add(field)
         details.append({"field": field, "message": _message_for(field, err_type)})
 
-    return {"error": "Invalid report", "details": details}
+    return {"error": error, "details": details}

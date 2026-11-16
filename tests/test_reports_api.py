@@ -41,14 +41,24 @@ CHECK_SCRIPT = {
     "check_missing": CHECK_REPLY,
     "check_panic": CHECK_REPLY,
 }
+DRAFT_REPLY = json.dumps(
+    {
+        "headline": "Engine 2 vibration",
+        "summary": "Vibration slightly high.",
+        "recommended_action": "Inspect turbopump 2.",
+    }
+)
+REVIEW_REPLY = json.dumps({"passed": True, "feedback": "Fine.", "issues": []})
+BRIEFING_SCRIPT = {"draft": DRAFT_REPLY, "review": REVIEW_REPLY}
 ALL_STEPS = [
     "classify", "check_limits", "brief_by",
     "check_injection", "check_missing", "check_panic",
+    "draft_round_1", "review_round_1",
 ]
 
 
 def fake_model() -> FakeModel:
-    return FakeModel(script={"classify": CLASSIFY_REPLY, **CHECK_SCRIPT})
+    return FakeModel(script={"classify": CLASSIFY_REPLY, **CHECK_SCRIPT, **BRIEFING_SCRIPT})
 
 
 @pytest.fixture
@@ -214,7 +224,7 @@ def test_result_and_trace_survive_restart_via_api(db_path):
     # App #2 gets a model that would fail if called: GET must read from the
     # database, not re-run the pipeline.
     app2 = create_app(
-        db_path=db_path, model_client=FakeModel(script={"classify": ModelError("x"), **CHECK_SCRIPT})
+        db_path=db_path, model_client=FakeModel(script={"classify": ModelError("x"), **CHECK_SCRIPT, **BRIEFING_SCRIPT})
     )
     with TestClient(app2) as client2:
         resp = client2.get(f"/reports/{posted['report']['id']}")
@@ -249,7 +259,7 @@ def test_post_safe_readings_runs_pipeline_and_returns_go(client):
     assert result["brief_by_minutes"] == 30
     assert result["classify_fallback"] is False
     assert [s["step"] for s in body["trace"]] == ALL_STEPS
-    assert [s["position"] for s in body["trace"]] == [0, 1, 2, 3, 4, 5]
+    assert [s["position"] for s in body["trace"]] == [0, 1, 2, 3, 4, 5, 6, 7]
     assert result["needs_review"] is False
     assert result["review_reasons"] == []
     assert set(result["checks"]) == {"injection", "missing", "panic"}
@@ -268,7 +278,7 @@ def test_post_high_wind_is_no_go_and_forces_high(client):
 
 def test_post_with_model_error_uses_code_verdict_and_fallbacks(db_path):
     model = FakeModel(
-        script={"classify": ModelError("model is down"), **CHECK_SCRIPT}
+        script={"classify": ModelError("model is down"), **CHECK_SCRIPT, **BRIEFING_SCRIPT}
     )
     app = create_app(db_path=db_path, model_client=model)
     with TestClient(app) as c:
@@ -283,13 +293,13 @@ def test_post_with_model_error_uses_code_verdict_and_fallbacks(db_path):
     assert result["verdict"] == "no_go"
     assert [v["reading"] for v in result["violations"]] == ["temp_c"]
     assert result["brief_by_minutes"] == 5
-    assert len(body["trace"]) == 6
+    assert len(body["trace"]) == 8
     assert body["trace"][0]["detail"]["fallback_used"] is True
 
 
 def test_post_model_error_with_safe_readings_is_still_go(db_path):
     model = FakeModel(
-        script={"classify": ModelError("model is down"), **CHECK_SCRIPT}
+        script={"classify": ModelError("model is down"), **CHECK_SCRIPT, **BRIEFING_SCRIPT}
     )
     with TestClient(create_app(db_path=db_path, model_client=model)) as c:
         result = c.post("/reports", json=VALID_REPORT).json()["result"]
@@ -315,12 +325,16 @@ def test_unexpected_pipeline_crash_keeps_report_saved(db_path, monkeypatch, capl
 
         report_id = body["report"]["id"]
         one = c.get(f"/reports/{report_id}").json()
-        assert one == {"report": body["report"], "result": None, "trace": []}
+        assert one == {
+            "report": body["report"], "result": None, "trace": [], "briefing": None,
+        }
+        assert body["briefing"] is None
 
         item = c.get("/reports").json()["reports"][0]
         assert item["id"] == report_id
         for field in RESULT_SUMMARY_FIELDS:
             assert item[field] is None
+        assert item["briefing_status"] is None
 
 
 def test_get_report_returns_same_result_and_trace_as_post(client):
@@ -332,6 +346,7 @@ def test_get_report_returns_same_result_and_trace_as_post(client):
         "report": posted["report"],
         "result": posted["result"],
         "trace": posted["trace"],
+        "briefing": posted["briefing"],
     }
 
 
@@ -397,7 +412,7 @@ def test_post_hidden_instruction_with_high_wind_is_no_go_and_needs_review(client
     assert result["needs_review"] is True
     assert result["review_reasons"]
     assert set(result["checks"]) == {"injection", "missing", "panic"}
-    assert len(body["trace"]) == 6
+    assert len(body["trace"]) == 8
     assert [s["step"] for s in body["trace"]] == ALL_STEPS
 
 
@@ -434,3 +449,42 @@ def test_create_app_with_fake_provider_flags_hidden_instruction():
     assert body["result"]["verdict"] == "no_go"
     assert body["result"]["needs_review"] is True
     assert [s["step"] for s in body["trace"]] == ALL_STEPS
+
+
+# --- Briefing in the API --------------------------------------------------
+
+BRIEFING_FIELDS = ("status", "full_text", "rounds_used", "review_passed",
+                   "approved_by", "approved_at")
+
+
+def test_post_report_returns_pending_briefing(client):
+    body = client.post("/reports", json=VALID_REPORT).json()
+    briefing = body["briefing"]
+    for field in BRIEFING_FIELDS:
+        assert field in briefing
+    assert briefing["status"] == "pending"
+    assert briefing["review_passed"] is True  # reviewer passed, still pending
+    assert briefing["rounds_used"] == 1
+    assert briefing["approved_by"] is None
+    assert briefing["approved_at"] is None
+    assert "Engine 2 vibration" in briefing["full_text"]
+
+
+def test_get_report_returns_same_briefing_as_post(client):
+    posted = client.post("/reports", json=VALID_REPORT).json()
+    got = client.get(f"/reports/{posted['report']['id']}").json()
+    assert got["briefing"] == posted["briefing"]
+
+
+def test_list_includes_briefing_status(client):
+    posted = client.post("/reports", json=VALID_REPORT).json()
+    item = client.get("/reports").json()["reports"][0]
+    assert item["id"] == posted["report"]["id"]
+    assert item["briefing_status"] == "pending"
+
+    client.post(
+        f"/briefings/{posted['report']['id']}/approve",
+        json={"approved_by": "Flight Director Rao"},
+    )
+    item = client.get("/reports").json()["reports"][0]
+    assert item["briefing_status"] == "approved"

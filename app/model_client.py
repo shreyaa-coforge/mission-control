@@ -263,7 +263,6 @@ _OPENAI_ENV_VARS = (
 
 # Canned replies used when MODEL_PROVIDER=fake, so the app runs end to end
 # with no API key. Each key is a pipeline step name.
-# Later branches add demo replies for the other steps (draft, review).
 _DEMO_CHECK_REPLY = json.dumps(
     {
         "flagged": False,
@@ -285,6 +284,21 @@ DEMO_SCRIPT: dict[str, Any] = {
     "check_injection": _DEMO_CHECK_REPLY,
     "check_missing": _DEMO_CHECK_REPLY,
     "check_panic": _DEMO_CHECK_REPLY,
+    "draft": json.dumps(
+        {
+            "headline": "Demo mode briefing",
+            "summary": "Demo mode draft, no real model was called.",
+            "recommended_action": "Demo mode: review the raw report before deciding.",
+        }
+    ),
+    # "passed" is a reviewer mark only; it never approves the briefing.
+    "review": json.dumps(
+        {
+            "passed": True,
+            "feedback": "Demo mode review.",
+            "issues": [],
+        }
+    ),
 }
 
 
